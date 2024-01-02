@@ -1,0 +1,179 @@
+<!DOCTYPE html><html lang="en"><head><meta charSet="utf-8"/><link rel="preload" as="font" href="/_next/static/media/c9a5bc6a7c948fb0-s.p.woff2" crossorigin="" type="font/woff2"/><link rel="stylesheet" href="/_next/static/css/34c9aa3dac019c99.css" data-precedence="next"/><title>Micro Front-End - MicroApp render realize</title><meta name="description" content="MicroApp微前端框架渲染挂载实现（WebComponent新特性）"/><meta name="viewport" content="width=device-width, initial-scale=1"/><meta name="next-size-adjust"/><link rel="icon" href="/logo.svg" type="image/x-icon"/><title>Hai</title><script src="/_next/static/chunks/polyfills-78c92fac7aa8fdd8.js" noModule=""></script></head><body class="antialiased min-h-screen bg-white text-slate-900 __className_a64ecd"><div class="max-w-2xl mx-auto py-10 px-4"><header><div class="flex items-center justify-between"><button class="border rounded-md w-6 h-6 flex items-center justify-center"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"></path></svg></button><nav class="ml-auto text-sm font-medium space-x-6"><a href="/">Home</a><a href="/about">About</a></nav></div></header><main><article class="py-6 prose dark:prose-invert"><h1 class="mb-4 break-all">Micro Front-End - MicroApp render realize</h1><p class="text-slate-700">MicroApp微前端框架渲染挂载实现（WebComponent新特性）</p><hr class="my-4"/><p>关于微前端的不同解决方案总结，可以结合下我之前的文章 -&gt;
+<a href="https://juejin.cn/post/7149531106105098277?share_token=77b5ab8b-e8ba-4538-b983-ad0dd981ef44">👾 浅谈微前端解决方案</a></p>
+<h3>WebComponent 介绍：</h3>
+<p>我们可以通过使用新特性 CustomElement 自定义一个 html 标签，来表示一个原生组件，以此来代替如今框架中 React、vue 中的组件。</p>
+<h3>如何使用？</h3>
+<pre><code class="language-js">class microApp extends HTMLElement {
+  constructor() {
+    super()
+  }
+}
+</code></pre>
+<pre><code class="language-js">window.customElements.define(&quot;micro-app&quot;, microApp)
+</code></pre>
+<p>这样我们在模板中就可以使用了！</p>
+<pre><code class="language-js">&lt;micro-app&gt;&lt;/micro-app&gt;
+</code></pre>
+<p><strong>有意思的是，这个原生组件与我们框架中的组件一样，有着自己的生命周期钩子。</strong></p>
+<p><strong>connectedCallback：当组件被插入到文档中触发，有利于我们进行代码初始化。</strong></p>
+<p><strong>disconnectedCallback：当组件从文档中被移除时触发，有利于我们进行代码清除。</strong></p>
+<p><strong>attributeChangedCallback(attrName, oldVal, newVal)：当组件中设置的响应式数据发生变更时触发，结合 observedAttributes 属性一起使用。</strong></p>
+<p><strong>adoptedCallback：当组件被插入到一个新的文档中触发。</strong></p>
+<p><code>参考MDN中Document.adoptNode的API介绍。</code></p>
+<blockquote>
+<h1>Document.adoptNode()</h1>
+<p>从其他的 document 文档中获取一个节点。该节点以及它的子树上的所有节点都会从原文档删除 (如果有这个节点的话), 并且它的<code>ownerDocument</code>属性会变成当前的 document 文档。之后你可以把这个节点插入到当前文档中。</p>
+</blockquote>
+<h4>步入本文主题：实现一个迷你版的 microApp。</h4>
+<h3>microApp 核心要点：巧妙利用 CustomElement，使用 htmlEntry+各种隔离机制实现子应用挂载、运行与卸载。</h3>
+<h3></h3>
+<p>首先我们思考，为什么微前端和 webcomponent 扯上了关系？</p>
+<p><strong>图出自 microApp 官网</strong>
+<img src="https://p9-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/7e0201dfb54d4cf69dc8c4e82a5ec985~tplv-k3u1fbpfcp-watermark.image?" alt="image.png"/></p>
+<p>可以看到，我们利用了 webcomponent 原生组件特性，来充当一个基座应用与子应用的媒介，因为其具有天然的原生支持，可以直接被注册在基座之中，通信也变得十分轻松，天然的生命周期钩子使得它可以进行子应用不同状态的流转操作。</p>
+<p><strong>本文主要实现的是对于子应用的挂载渲染操作，自然使用到的便是 webcomponent 的 connectedCallback 钩子。</strong></p>
+<p>下面来看具体如何实现，这边我们使用 html 编写基座，vue3 编写子应用。</p>
+<p>基座代码如下：</p>
+<pre><code class="language-js">&lt;!DOCTYPE html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+  &lt;meta charset=&quot;UTF-8&quot;&gt;
+  &lt;meta http-equiv=&quot;X-UA-Compatible&quot; content=&quot;IE=edge&quot;&gt;
+  &lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1.0&quot;&gt;
+  &lt;title&gt;微前端解决方案 -WebComponent&lt;/title&gt;
+&lt;/head&gt;
+&lt;script src=&quot;./index.mjs&quot; type=&quot;module&quot;&gt;&lt;/script&gt;
+&lt;body&gt;
+    &lt;div&gt;微前端解决方案 -WebComponent&lt;/div&gt;
+    &lt;div&gt;
+      // active-url 表示子应用激活url
+      &lt;micro-app active-url=&quot;http://127.0.0.1:8002/&quot;&gt;&lt;/micro-app&gt;
+    &lt;/div&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+</code></pre>
+<p>子应用代码如下：</p>
+<p>main.js</p>
+<pre><code class="language-js">import { createApp } from &quot;vue&quot;
+import App from &quot;./App.vue&quot;
+import ElementPlus from &quot;element-plus&quot;
+import &quot;element-plus/dist/index.css&quot;
+
+createApp(App).use(ElementPlus).mount(&quot;#app&quot;)
+</code></pre>
+<p>webpack.config.js</p>
+<pre><code class="language-js">module.exports = {
+  devServer: {
+    port: 8002,
+    headers: {
+      &quot;Access-Control-Allow-Origin&quot;: &quot;*&quot;,
+    },
+  },
+}
+</code></pre>
+<p>microApp 组件代码：</p>
+<pre><code class="language-js">import { fetchHtml, executeScript } from &quot;./fetch.mjs&quot;
+
+class microApp extends HTMLElement {
+  // 子应用激活url
+  get activeUrl() {
+    return this.getAttribute(&quot;active-url&quot;)
+  }
+  // 需要被监听的属性放在这里定义
+  static get observedAttributes() {
+    // return [&#x27;name&#x27;]
+  }
+  get container() {
+    return this.shadowRoot
+  }
+  constructor() {
+    super()
+  }
+  // 生命周期钩子： component被插入dom中触发
+  async connectedCallback() {
+    // 注意:getAttribute只能在这时候拿到
+    // this.activeUrl = this.getAttribute(&quot;active-url&quot;);
+    const temp = await this.load()
+    this.bootstrap(temp)
+    Promise.resolve().then(() =&gt; {
+      this.mount()
+    })
+  }
+  // 加载资源
+  async load() {
+    const temp = await fetchHtml(this.activeUrl)
+    return temp
+  }
+  // 初始化子应用
+  bootstrap(temp) {
+    // 创建文档片段插入组件中
+    const template = document.createElement(&quot;template&quot;)
+    template.innerHTML = temp
+    const fra = document.createDocumentFragment()
+    fra.appendChild(template.content.cloneNode(true))
+    this.appendChild(fra)
+  }
+  // 挂载子应用
+  mount() {
+    // 执行相关script
+    executeScript(document)
+  }
+}
+window.customElements.define(&quot;micro-app&quot;, microApp)
+</code></pre>
+<p>工具函数：</p>
+<pre><code class="language-js">// 保存script脚本
+const sourceSet = new Set()
+
+// 封装请求资源
+async function fetchResource(url) {
+  const res = await fetch(url)
+  // res.text 也是一个promise
+  return res.text()
+}
+
+// 请求html文件
+export async function fetchHtml(url) {
+  let template = await fetchResource(url)
+  return resolveScript(template, url)
+}
+
+// 对html源码进行处理
+export function resolveScript(template, activeUrl) {
+  return template
+    .replace(/&lt;head[^&gt;]*&gt;[\s\S]*?&lt;\/head&gt;/i, (match) =&gt; {
+      return match
+        .replace(/&lt;head/i, &quot;&lt;micro-app-head&quot;)
+        .replace(/&lt;\/head&gt;/i, &quot;&lt;/micro-app-head&gt;&quot;)
+    })
+    .replace(/&lt;body[^&gt;]*&gt;[\s\S]*?&lt;\/body&gt;/i, (match) =&gt; {
+      return match
+        .replace(/&lt;body/i, &quot;&lt;micro-app-body&quot;)
+        .replace(/&lt;\/body&gt;/i, &quot;&lt;/micro-app-body&gt;&quot;)
+    })
+    .replace(/src=&quot;(.*?)&quot;/g, (_, text) =&gt; {
+      sourceSet.add(`${activeUrl}${text}`)
+      return `src=&quot;${activeUrl}${text}&quot;`
+    })
+    .replace(/href=&quot;(.*?)&quot;/g, (_, text) =&gt; {
+      return `href=&quot;${activeUrl}${text}&quot;`
+    })
+}
+
+// 包装所有script脚本
+function getExternalScript() {
+  return Promise.all(Array.from(sourceSet).map((url) =&gt; fetchResource(url)))
+}
+
+// 执行脚本
+export async function executeScript(document) {
+  const scripts = await getExternalScript()
+  scripts.forEach((code) =&gt; {
+    ;(function (document) {
+      eval(code)
+    })(document)
+  })
+}
+</code></pre>
+<p>最终效果如下：
+<img src="https://p9-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/4c171a675b1e497fb956fdcca60fcbf6~tplv-k3u1fbpfcp-watermark.image?" alt="image.png"/></p></article></main><footer class="mt-10"><hr class="my-4"/><small class="flex justify-between">@ Hai<nav class="underline decoration-1"><a class="mr-3" href="https://github.com/haijie-x">github</a><a href="https://twitter.com/__haijie">twitter</a></nav></small></footer></div><script src="/_next/static/chunks/webpack-ba6ac5b5713db877.js" async=""></script><script src="/_next/static/chunks/44856608-9ee913c47fa02561.js" async=""></script><script src="/_next/static/chunks/920-b802bbbd4288d489.js" async=""></script><script src="/_next/static/chunks/main-app-656bc428d252f1b7.js" async=""></script><script>(self.__next_f=self.__next_f||[]).push([0])</script><script>self.__next_f.push([1,"1:HL[\"/_next/static/media/c9a5bc6a7c948fb0-s.p.woff2\",{\"as\":\"font\",\"type\":\"font/woff2\"}]\n2:HL[\"/_next/static/css/34c9aa3dac019c99.css\",{\"as\":\"style\"}]\n0:\"$L3\"\n"])</script><script>self.__next_f.push([1,"4:I{\"id\":\"8225\",\"chunks\":[\"272:static/chunks/webpack-ba6ac5b5713db877.js\",\"417:static/chunks/44856608-9ee913c47fa02561.js\",\"920:static/chunks/920-b802bbbd4288d489.js\"],\"name\":\"\",\"async\":false}\n6:I{\"id\":\"1659\",\"chunks\":[\"272:static/chunks/webpack-ba6ac5b5713db877.js\",\"417:static/chunks/44856608-9ee913c47fa02561.js\",\"920:static/chunks/920-b802bbbd4288d489.js\"],\"name\":\"\",\"async\":false}\n7:I{\"id\":\"8112\",\"chunks\":[\"553:static/chunks/553-b75a1ab1e88d23c9.js\",\"185:static/chunks/app/layout-ae43402e7109a0fc.js\"],\"nam"])</script><script>self.__next_f.push([1,"e\":\"\",\"async\":false}\n8:I{\"id\":\"9553\",\"chunks\":[\"553:static/chunks/553-b75a1ab1e88d23c9.js\",\"185:static/chunks/app/layout-ae43402e7109a0fc.js\"],\"name\":\"\",\"async\":false}\na:I{\"id\":\"1588\",\"chunks\":[\"272:static/chunks/webpack-ba6ac5b5713db877.js\",\"417:static/chunks/44856608-9ee913c47fa02561.js\",\"920:static/chunks/920-b802bbbd4288d489.js\"],\"name\":\"\",\"async\":false}\nb:I{\"id\":\"4737\",\"chunks\":[\"272:static/chunks/webpack-ba6ac5b5713db877.js\",\"417:static/chunks/44856608-9ee913c47fa02561.js\",\"920:static/chunks/920-b802b"])</script><script>self.__next_f.push([1,"bbd4288d489.js\"],\"name\":\"\",\"async\":false}\n"])</script><script>self.__next_f.push([1,"3:[[[\"$\",\"link\",\"0\",{\"rel\":\"stylesheet\",\"href\":\"/_next/static/css/34c9aa3dac019c99.css\",\"precedence\":\"next\"}]],[\"$\",\"$L4\",null,{\"buildId\":\"JXPeZoXc9Nz75w5nwf-9S\",\"assetPrefix\":\"\",\"initialCanonicalUrl\":\"/posts/microApp-render-realize\",\"initialTree\":[\"\",{\"children\":[\"posts\",{\"children\":[[\"slug\",\"microApp-render-realize\",\"c\"],{\"children\":[\"__PAGE__?{\\\"slug\\\":[\\\"microApp-render-realize\\\"]}\",{}]}]}]},\"$undefined\",\"$undefined\",true],\"initialHead\":[\"$L5\",[\"$\",\"meta\",null,{\"name\":\"next-size-adjust\"}]],\"globalErrorComponent\":\"$6\",\"notFound\":[\"$\",\"html\",null,{\"lang\":\"en\",\"children\":[[\"$\",\"link\",null,{\"rel\":\"icon\",\"href\":\"/logo.svg\",\"type\":\"image/x-icon\"}],[\"$\",\"title\",null,{\"children\":\"Hai\"}],[\"$\",\"body\",null,{\"className\":\"antialiased min-h-screen bg-white text-slate-900 __className_a64ecd\",\"children\":[\"$\",\"div\",null,{\"className\":\"max-w-2xl mx-auto py-10 px-4\",\"children\":[[\"$\",\"header\",null,{\"children\":[\"$\",\"div\",null,{\"className\":\"flex items-center justify-between\",\"children\":[[\"$\",\"$L7\",null,{}],[\"$\",\"nav\",null,{\"className\":\"ml-auto text-sm font-medium space-x-6\",\"children\":[[\"$\",\"$L8\",null,{\"href\":\"/\",\"children\":\"Home\"}],[\"$\",\"$L8\",null,{\"href\":\"/about\",\"children\":\"About\"}]]}]]}]}],[\"$\",\"main\",null,{\"children\":[\"$L9\",\"$undefined\",[[\"$\",\"title\",null,{\"children\":\"404: This page could not be found.\"}],[\"$\",\"div\",null,{\"style\":{\"fontFamily\":\"system-ui,\\\"Segoe UI\\\",Roboto,Helvetica,Arial,sans-serif,\\\"Apple Color Emoji\\\",\\\"Segoe UI Emoji\\\"\",\"height\":\"100vh\",\"textAlign\":\"center\",\"display\":\"flex\",\"flexDirection\":\"column\",\"alignItems\":\"center\",\"justifyContent\":\"center\"},\"children\":[\"$\",\"div\",null,{\"children\":[[\"$\",\"style\",null,{\"dangerouslySetInnerHTML\":{\"__html\":\"body{color:#000;background:#fff;margin:0}.next-error-h1{border-right:1px solid rgba(0,0,0,.3)}@media (prefers-color-scheme:dark){body{color:#fff;background:#000}.next-error-h1{border-right:1px solid rgba(255,255,255,.3)}}\"}}],[\"$\",\"h1\",null,{\"className\":\"next-error-h1\",\"style\":{\"display\":\"inline-block\",\"margin\":\"0 20px 0 0\",\"padding\":\"0 23px 0 0\",\"fontSize\":24,\"fontWeight\":500,\"verticalAlign\":\"top\",\"lineHeight\":\"49px\"},\"children\":\"404\"}],[\"$\",\"div\",null,{\"style\":{\"display\":\"inline-block\"},\"children\":[\"$\",\"h2\",null,{\"style\":{\"fontSize\":14,\"fontWeight\":400,\"lineHeight\":\"49px\",\"margin\":0},\"children\":\"This page could not be found.\"}]}]]}]}]]]}],[\"$\",\"footer\",null,{\"className\":\"mt-10\",\"children\":[[\"$\",\"hr\",null,{\"className\":\"my-4\"}],[\"$\",\"small\",null,{\"className\":\"flex justify-between\",\"children\":[\"@ Hai\",[\"$\",\"nav\",null,{\"className\":\"underline decoration-1\",\"children\":[[\"$\",\"$L8\",null,{\"href\":\"https://github.com/haijie-x\",\"className\":\"mr-3\",\"children\":\"github\"}],[\"$\",\"$L8\",null,{\"href\":\"https://twitter.com/__haijie\",\"children\":\"twitter\"}]]}]]}]]}]]}]}]]}],\"asNotFound\":false,\"children\":[[\"$\",\"html\",null,{\"lang\":\"en\",\"children\":[[\"$\",\"link\",null,{\"rel\":\"icon\",\"href\":\"/logo.svg\",\"type\":\"image/x-icon\"}],[\"$\",\"title\",null,{\"children\":\"Hai\"}],[\"$\",\"body\",null,{\"className\":\"antialiased min-h-screen bg-white text-slate-900 __className_a64ecd\",\"children\":[\"$\",\"div\",null,{\"className\":\"max-w-2xl mx-auto py-10 px-4\",\"children\":[[\"$\",\"header\",null,{\"children\":[\"$\",\"div\",null,{\"className\":\"flex items-center justify-between\",\"children\":[[\"$\",\"$L7\",null,{}],[\"$\",\"nav\",null,{\"className\":\"ml-auto text-sm font-medium space-x-6\",\"children\":[[\"$\",\"$L8\",null,{\"href\":\"/\",\"children\":\"Home\"}],[\"$\",\"$L8\",null,{\"href\":\"/about\",\"children\":\"About\"}]]}]]}]}],[\"$\",\"main\",null,{\"children\":[\"$\",\"$La\",null,{\"parallelRouterKey\":\"children\",\"segmentPath\":[\"children\"],\"error\":\"$undefined\",\"errorStyles\":\"$undefined\",\"loading\":\"$undefined\",\"loadingStyles\":\"$undefined\",\"hasLoading\":false,\"template\":[\"$\",\"$Lb\",null,{}],\"templateStyles\":\"$undefined\",\"notFound\":\"$undefined\",\"notFoundStyles\":\"$undefined\",\"childProp\":{\"current\":[\"$\",\"$La\",null,{\"parallelRouterKey\":\"children\",\"segmentPath\":[\"children\",\"posts\",\"children\"],\"error\":\"$undefined\",\"errorStyles\":\"$undefined\",\"loading\":\"$undefined\",\"loadingStyles\":\"$undefined\",\"hasLoading\":false,\"template\":[\"$\",\"$Lb\",null,{}],\"templateStyles\":\"$undefined\",\"notFound\":\"$undefined\",\"notFoundStyles\":\"$undefined\",\"childProp\":{\"current\":[\"$\",\"$La\",null,{\"parallelRouterKey\":\"children\",\"segmentPath\":[\"children\",\"posts\",\"children\",[\"slug\",\"microApp-render-realize\",\"c\"],\"children\"],\"error\":\"$undefined\",\"errorStyles\":\"$undefined\",\"loading\":\"$undefined\",\"loadingStyles\":\"$undefined\",\"hasLoading\":false,\"template\":[\"$\",\"$Lb\",null,{}],\"templateStyles\":\"$undefined\",\"notFound\":\"$undefined\",\"notFoundStyles\":\"$undefined\",\"childProp\":{\"current\":[\"$Lc\",null],\"segment\":\"__PAGE__?{\\\"slug\\\":[\\\"microApp-render-realize\\\"]}\"},\"styles\":[]}],\"segment\":[\"slug\",\"microApp-render-realize\",\"c\"]},\"styles\":[]}],\"segment\":\"posts\"},\"styles\":[]}]}],[\"$\",\"footer\",null,{\"className\":\"mt-10\",\"children\":[[\"$\",\"hr\",null,{\"className\":\"my-4\"}],[\"$\",\"small\",null,{\"className\":\"flex justify-between\",\"children\":[\"@ Hai\",[\"$\",\"nav\",null,{\"className\":\"underline decoration-1\",\"children\":[[\"$\",\"$L8\",null,{\"href\":\"https://github.com/haijie-x\",\"className\":\"mr-3\",\"children\":\"github\"}],[\"$\",\"$L8\",null,{\"href\":\"https://twitter.com/__haijie\",\"children\":\"twitter\"}]]}]]}]]}]]}]}]]}],null]}]]\n"])</script><script>self.__next_f.push([1,"c:[\"$\",\"article\",null,{\"className\":\"py-6 prose dark:prose-invert\",\"children\":[[\"$\",\"h1\",null,{\"className\":\"mb-4 break-all\",\"children\":\"Micro Front-End - MicroApp render realize\"}],[\"$\",\"p\",null,{\"className\":\"text-slate-700\",\"children\":\"MicroApp微前端框架渲染挂载实现（WebComponent新特性）\"}],[\"$\",\"hr\",null,{\"className\":\"my-4\"}],[[\"$\",\"p\",null,{\"children\":[\"关于微前端的不同解决方案总结，可以结合下我之前的文章 -\u003e\\n\",[\"$\",\"a\",null,{\"href\":\"https://juejin.cn/post/7149531106105098277?share_token=77b5ab8b-e8ba-4538-b983-ad0dd981ef44\",\"children\":\"👾 浅谈微前端解决方案\"}]]}],\"\\n\",[\"$\",\"h3\",null,{\"children\":\"WebComponent 介绍：\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"我们可以通过使用新特性 CustomElement 自定义一个 html 标签，来表示一个原生组件，以此来代替如今框架中 React、vue 中的组件。\"}],\"\\n\",[\"$\",\"h3\",null,{\"children\":\"如何使用？\"}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"class microApp extends HTMLElement {\\n  constructor() {\\n    super()\\n  }\\n}\\n\"}]}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"window.customElements.define(\\\"micro-app\\\", microApp)\\n\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"这样我们在模板中就可以使用了！\"}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"\u003cmicro-app\u003e\u003c/micro-app\u003e\\n\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":[\"$\",\"strong\",null,{\"children\":\"有意思的是，这个原生组件与我们框架中的组件一样，有着自己的生命周期钩子。\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":[\"$\",\"strong\",null,{\"children\":\"connectedCallback：当组件被插入到文档中触发，有利于我们进行代码初始化。\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":[\"$\",\"strong\",null,{\"children\":\"disconnectedCallback：当组件从文档中被移除时触发，有利于我们进行代码清除。\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":[\"$\",\"strong\",null,{\"children\":\"attributeChangedCallback(attrName, oldVal, newVal)：当组件中设置的响应式数据发生变更时触发，结合 observedAttributes 属性一起使用。\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":[\"$\",\"strong\",null,{\"children\":\"adoptedCallback：当组件被插入到一个新的文档中触发。\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":[\"$\",\"code\",null,{\"children\":\"参考MDN中Document.adoptNode的API介绍。\"}]}],\"\\n\",[\"$\",\"blockquote\",null,{\"children\":[\"\\n\",[\"$\",\"h1\",null,{\"children\":\"Document.adoptNode()\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":[\"从其他的 document 文档中获取一个节点。该节点以及它的子树上的所有节点都会从原文档删除 (如果有这个节点的话), 并且它的\",[\"$\",\"code\",null,{\"children\":\"ownerDocument\"}],\"属性会变成当前的 document 文档。之后你可以把这个节点插入到当前文档中。\"]}],\"\\n\"]}],\"\\n\",[\"$\",\"h4\",null,{\"children\":\"步入本文主题：实现一个迷你版的 microApp。\"}],\"\\n\",[\"$\",\"h3\",null,{\"children\":\"microApp 核心要点：巧妙利用 CustomElement，使用 htmlEntry+各种隔离机制实现子应用挂载、运行与卸载。\"}],\"\\n\",[\"$\",\"h3\",null,{}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"首先我们思考，为什么微前端和 webcomponent 扯上了关系？\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":[[\"$\",\"strong\",null,{\"children\":\"图出自 microApp 官网\"}],\"\\n\",[\"$\",\"img\",null,{\"src\":\"https://p9-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/7e0201dfb54d4cf69dc8c4e82a5ec985~tplv-k3u1fbpfcp-watermark.image?\",\"alt\":\"image.png\"}]]}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"可以看到，我们利用了 webcomponent 原生组件特性，来充当一个基座应用与子应用的媒介，因为其具有天然的原生支持，可以直接被注册在基座之中，通信也变得十分轻松，天然的生命周期钩子使得它可以进行子应用不同状态的流转操作。\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":[\"$\",\"strong\",null,{\"children\":\"本文主要实现的是对于子应用的挂载渲染操作，自然使用到的便是 webcomponent 的 connectedCallback 钩子。\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"下面来看具体如何实现，这边我们使用 html 编写基座，vue3 编写子应用。\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"基座代码如下：\"}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"\u003c!DOCTYPE html\u003e\\n\u003chtml lang=\\\"en\\\"\u003e\\n\u003chead\u003e\\n  \u003cmeta charset=\\\"UTF-8\\\"\u003e\\n  \u003cmeta http-equiv=\\\"X-UA-Compatible\\\" content=\\\"IE=edge\\\"\u003e\\n  \u003cmeta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1.0\\\"\u003e\\n  \u003ctitle\u003e微前端解决方案 -WebComponent\u003c/title\u003e\\n\u003c/head\u003e\\n\u003cscript src=\\\"./index.mjs\\\" type=\\\"module\\\"\u003e\u003c/script\u003e\\n\u003cbody\u003e\\n    \u003cdiv\u003e微前端解决方案 -WebComponent\u003c/div\u003e\\n    \u003cdiv\u003e\\n      // active-url 表示子应用激活url\\n      \u003cmicro-app active-url=\\\"http://127.0.0.1:8002/\\\"\u003e\u003c/micro-app\u003e\\n    \u003c/div\u003e\\n\u003c/body\u003e\\n\u003c/html\u003e\\n\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"子应用代码如下：\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"main.js\"}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"import { createApp } from \\\"vue\\\"\\nimport App from \\\"./App.vue\\\"\\nimport ElementPlus from \\\"element-plus\\\"\\nimport \\\"element-plus/dist/index.css\\\"\\n\\ncreateApp(App).use(ElementPlus).mount(\\\"#app\\\")\\n\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"webpack.config.js\"}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"module.exports = {\\n  devServer: {\\n    port: 8002,\\n    headers: {\\n      \\\"Access-Control-Allow-Origin\\\": \\\"*\\\",\\n    },\\n  },\\n}\\n\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"microApp 组件代码：\"}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"import { fetchHtml, executeScript } from \\\"./fetch.mjs\\\"\\n\\nclass microApp extends HTMLElement {\\n  // 子应用激活url\\n  get activeUrl() {\\n    return this.getAttribute(\\\"active-url\\\")\\n  }\\n  // 需要被监听的属性放在这里定义\\n  static get observedAttributes() {\\n    // return ['name']\\n  }\\n  get container() {\\n    return this.shadowRoot\\n  }\\n  constructor() {\\n    super()\\n  }\\n  // 生命周期钩子： component被插入dom中触发\\n  async connectedCallback() {\\n    // 注意:getAttribute只能在这时候拿到\\n    // this.activeUrl = this.getAttribute(\\\"active-url\\\");\\n    const temp = await this.load()\\n    this.bootstrap(temp)\\n    Promise.resolve().then(() =\u003e {\\n      this.mount()\\n    })\\n  }\\n  // 加载资源\\n  async load() {\\n    const temp = await fetchHtml(this.activeUrl)\\n    return temp\\n  }\\n  // 初始化子应用\\n  bootstrap(temp) {\\n    // 创建文档片段插入组件中\\n    const template = document.createElement(\\\"template\\\")\\n    template.innerHTML = temp\\n    const fra = document.createDocumentFragment()\\n    fra.appendChild(template.content.cloneNode(true))\\n    this.appendChild(fra)\\n  }\\n  // 挂载子应用\\n  mount() {\\n    // 执行相关script\\n    executeScript(document)\\n  }\\n}\\nwindow.customElements.define(\\\"micro-app\\\", microApp)\\n\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"工具函数：\"}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"// 保存script脚本\\nconst sourceSet = new Set()\\n\\n// 封装请求资源\\nasync function fetchResource(url) {\\n  const res = await fetch(url)\\n  // res.text 也是一个promise\\n  return res.text()\\n}\\n\\n// 请求html文件\\nexport async function fetchHtml(url) {\\n  let template = await fetchResource(url)\\n  return resolveScript(template, url)\\n}\\n\\n// 对html源码进行处理\\nexport function resolveScript(template, activeUrl) {\\n  return template\\n    .replace(/\u003chead[^\u003e]*\u003e[\\\\s\\\\S]*?\u003c\\\\/head\u003e/i, (match) =\u003e {\\n      return match\\n        .replace(/\u003chead/i, \\\"\u003cmicro-app-head\\\")\\n        .replace(/\u003c\\\\/head\u003e/i, \\\"\u003c/micro-app-head\u003e\\\")\\n    })\\n    .replace(/\u003cbody[^\u003e]*\u003e[\\\\s\\\\S]*?\u003c\\\\/body\u003e/i, (match) =\u003e {\\n      return match\\n        .replace(/\u003cbody/i, \\\"\u003cmicro-app-body\\\")\\n        .replace(/\u003c\\\\/body\u003e/i, \\\"\u003c/micro-app-body\u003e\\\")\\n    })\\n    .replace(/src=\\\"(.*?)\\\"/g, (_, text) =\u003e {\\n      sourceSet.add(`${activeUrl}${text}`)\\n      return `src=\\\"${activeUrl}${text}\\\"`\\n    })\\n    .replace(/href=\\\"(.*?)\\\"/g, (_, text) =\u003e {\\n      return `href=\\\"${activeUrl}${text}\\\"`\\n    })\\n}\\n\\n// 包装所有script脚本\\nfunction getExternalScript() {\\n  return Promise.all(Array.from(sourceSet).map((url) =\u003e fetchResource(url)))\\n}\\n\\n// 执行脚本\\nexport async function executeScript(document) {\\n  const scripts = await getExternalScript()\\n  scripts.forEach((code) =\u003e {\\n    ;(function (document) {\\n      eval(code)\\n    })(document)\\n  })\\n}\\n\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":[\"最终效果如下：\\n\",[\"$\",\"img\",null,{\"src\":\"https://p9-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/4c171a675b1e497fb956fdcca60fcbf6~tplv-k3u1fbpfcp-watermark.image?\",\"alt\":\"image.png\"}]]}]]]}]\n"])</script><script>self.__next_f.push([1,"9:[[\"$\",\"meta\",\"0\",{\"charSet\":\"utf-8\"}],[\"$\",\"meta\",\"1\",{\"name\":\"viewport\",\"content\":\"width=device-width, initial-scale=1\"}]]\n5:[[\"$\",\"meta\",\"0\",{\"charSet\":\"utf-8\"}],[\"$\",\"title\",\"1\",{\"children\":\"Micro Front-End - MicroApp render realize\"}],[\"$\",\"meta\",\"2\",{\"name\":\"description\",\"content\":\"MicroApp微前端框架渲染挂载实现（WebComponent新特性）\"}],[\"$\",\"meta\",\"3\",{\"name\":\"viewport\",\"content\":\"width=device-width, initial-scale=1\"}]]\n"])</script></body></html>

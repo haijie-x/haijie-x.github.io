@@ -1,0 +1,163 @@
+<!DOCTYPE html><html lang="en"><head><meta charSet="utf-8"/><link rel="preload" as="font" href="/_next/static/media/c9a5bc6a7c948fb0-s.p.woff2" crossorigin="" type="font/woff2"/><link rel="stylesheet" href="/_next/static/css/34c9aa3dac019c99.css" data-precedence="next"/><title>Surviving ESM and CJS module Interop</title><meta name="description" content="深入研究 ESM 和 CJS 模块方案"/><meta name="viewport" content="width=device-width, initial-scale=1"/><meta name="next-size-adjust"/><link rel="icon" href="/logo.svg" type="image/x-icon"/><title>Hai</title><script src="/_next/static/chunks/polyfills-78c92fac7aa8fdd8.js" noModule=""></script></head><body class="antialiased min-h-screen bg-white text-slate-900 __className_a64ecd"><div class="max-w-2xl mx-auto py-10 px-4"><header><div class="flex items-center justify-between"><button class="border rounded-md w-6 h-6 flex items-center justify-center"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"></path></svg></button><nav class="ml-auto text-sm font-medium space-x-6"><a href="/">Home</a><a href="/about">About</a></nav></div></header><main><article class="py-6 prose dark:prose-invert"><h1 class="mb-4 break-all">Surviving ESM and CJS module Interop</h1><p class="text-slate-700">深入研究 ESM 和 CJS 模块方案</p><hr class="my-4"/><p>ESM 与 CJS 作为两种如今流行的模块解决方案，如何进行互操作<code>interop</code>确实一大难题。本篇文章会先着手 package.json 简单介绍 CJS / ESM 模块方案。</p>
+<h3>package.json</h3>
+<p><strong>type</strong>: 定义该模块会被 Node 如何解析，若无该字段，会被认为是 CJS。</p>
+<pre><code class="language-js">// my-app.js, treated as an ES module because there is a package.json
+// file in the same folder with &quot;type&quot;: &quot;module&quot;.
+
+import &quot;./startup/init.js&quot;;
+// Loaded as ES module since ./startup contains no package.json file,
+// and therefore inherits the &quot;type&quot; value from one level up.
+
+import &quot;commonjs-package&quot;;
+// Loaded as CommonJS since ./node_modules/commonjs-package/package.json
+// lacks a &quot;type&quot; field or contains &quot;type&quot;: &quot;commonjs&quot;.
+
+import &quot;./node_modules/commonjs-package/index.js&quot;;
+// Loaded as CommonJS since ./node_modules/commonjs-package/package.json
+// lacks a &quot;type&quot; field or contains &quot;type&quot;: &quot;commonjs&quot;.
+</code></pre>
+<p>.mjs/.cjs 总是作为 ESM/CJS 模块化进行加载，而不管最近的 package.json 的设置。</p>
+<p><strong>main</strong>: 定义包的主要入口点。所有版本的 Node 皆支持。</p>
+<p><strong>exports</strong>: 定义包多个入口点，只有 12+ 版本的 Node 才支持。它可以支持定义子路径导出和条件导出，同时封装内部未导出的模块。所有的路径定义都得是以&#x27;./&#x27;开头的相对路径。</p>
+<p><strong>imports</strong>: 创建仅适用于包本身内的导入说明符的私有映射。字段中的条目必须始终以 # 开头，以确保它们与外部包说明符没有歧义。</p>
+<pre><code class="language-json">// package.json
+{
+  &quot;imports&quot;: {
+    &quot;#dep&quot;: {
+      // 有先后执行顺序 先加载node 再加载default 相关文件不存在会报错
+      &quot;node&quot;: &quot;dep-node-native&quot;,
+      &quot;default&quot;: &quot;./dep-polyfill.js&quot;
+    }
+  },
+  &quot;dependencies&quot;: {
+    &quot;dep-node-native&quot;: &quot;^1.0.0&quot;
+  }
+}
+</code></pre>
+<pre><code class="language-js">// node_modules/dep-node-native/index.js
+exports.name = &quot;native&quot;;
+// dep-polyfill.js
+exports.name = &quot;polyfill&quot;;
+
+// foo.mjs
+import a from &quot;#dep&quot;;
+</code></pre>
+<h3>ESM import CJS</h3>
+<pre><code class="language-js">// node_modules/colors/index.cjs
+module.exports = {
+  red: &quot;red&quot;,
+  blue: &quot;blue&quot;,
+};
+// my-app.mjs
+import colors from &quot;colors&quot;;
+// WON&#x27;T WORK: `import { red, blue } from &quot;colors&quot;;`
+
+// CAVEAT: We can&#x27;t do named import, but can expand later.
+const { red, blue } = colors;
+</code></pre>
+<p>由于这种简单性，库作者为了兼容库的 CJS 和 ESM 两种模式，他可能需要考虑 ESM 包装器模式（<a href="https://nodejs.org/api/packages.html#approach-1-use-an-es-module-wrapper">在 Node.js 文档中建议</a>），该模式是以 CJS 模块规范编写代码，然后在 ESM 模块的出口文件中导入 CJS 模块，并包装成 ESM 模块导出给用户使用。</p>
+<pre><code class="language-js">// package.json
+{
+    &quot;name&quot;: &quot;my-pkg&quot;,
+    &quot;main&quot;: &quot;./index.js&quot;,
+    &quot;exports&quot;: {
+      &quot;.&quot;: {
+        &quot;import&quot;: &quot;./wrapper.mjs&quot;,
+        &quot;require&quot;: &quot;./index.js&quot;
+      }
+    }
+  }
+
+// node_modules/my-pkg/a.js
+exports.module_name = &#x27;a&#x27;
+
+// node_modules/my-pkg/index.js
+const { module_name } = require(&#x27;./a&#x27;)
+exports.a_module_name = module_name
+
+// node_modules/my-pkg/wrapper.mjs
+import cjs_module from &#x27;./index.js&#x27;
+export const a_module_name = cjs_module.a_module_name
+
+// use my-pkg
+import { a_module_name } from &quot;my-pkg&quot;;
+console.log(a_module_name); // &#x27;a&#x27;
+
+const { a_module_name } = require(&quot;my-pkg&quot;);
+console.log(a_module_name); // &#x27;a&#x27;
+</code></pre>
+<h3>CJS import ESM</h3>
+<p>先说个坏消息，在 CJS 中导入 ESM 是痛苦的。要将 ESM 文件导入 CJS，必须遵守以下所有条件：<br/>
+<!-- -->1.你必须在 Node.js 上 v12.17.0+（这适用于任何与 ESM 相关的）。<br/>
+<!-- -->2.<a href="https://nodejs.org/api/esm.html#import-expressions">使用动态 import() 调用</a>，这会导致后续逻辑代码都为异步的。</p>
+<pre><code class="language-js">// esm.mjs
+export const name = &quot;polyfill&quot;;
+// cjs.js
+console.log(require(&quot;./esm.mjs&quot;)); // Error [ERR_REQUIRE_ESM]: require() of ES Module
+import(&quot;./esm.mjs&quot;).then((r) =&gt; console.log(r)); // [Module: null prototype] { name: &#x27;polyfill&#x27; }
+</code></pre>
+<h3>ESM &amp; CJS 互操作</h3>
+<p>对于 ESM 而言，import xxx 中的 xxx 指该模块的默认导出，这是一种语法糖，实际应该是 <code>import { default as xxx }</code></p>
+<pre><code class="language-js">import esm_module from &quot;./esm_module.mjs&quot;;
+</code></pre>
+<p>对于 CJS 而言，import xxx 的 xxx 指该模块的所有导出 即 module.exports 或 exports 对象
+这么设计的原因是 CJS 的动态的，而 ESM 的导入是静态的。
+也就是说 ESM 通过对源码的编译即可确定依赖关系，而 CJS 需运行时才可确定依赖关系。
+所以 ESM 导入现有的 CJS 需取整个对象，即 module.exports 或 exports 对象。</p>
+<pre><code class="language-js">import cjs_module from &quot;./cjs_module.js&quot;;
+</code></pre>
+<p>到这里，ESM 对于 CJS 的兼容设计似乎一点问题没有，但其实 export default xxx 为后续的 ESM 与 CJS 的 interop 问题埋下了祸根。</p>
+<p>在 ESM 被 javascript 的所有运行环境全量支持前，人们希望在此期间使用 ESM，此时就需要使用 Babel 进行 ESM 到 CJS 的编译。</p>
+<p>然而这样转换带来了一个问题：如何准确地将 ESM 编译为 CJS 呢？举个例子。</p>
+<p>一个标准的 ESM 导入导出如：<code>export default &#x27;foo&#x27;</code> 与 <code>import foo from &#x27;bar&#x27;</code>，直观上看，转换为 CJS 应该如此：<code>module.exports = &#x27;foo&#x27;</code> 与 <code>const foo = require(&#x27;bar&#x27;)</code>。</p>
+<p>这里暴露了一个问题，该模块的导出只能固定是<code>foo</code>，如果该模块还有 <code>export a</code>、<code>export b</code>,<code>export c</code>呢，编译后的 CJS 导出 <code>exports.a = &#x27;a&#x27;;exports.b = &#x27;b&#x27;; // ...</code>
+将被 <code>module.exports = &#x27;foo&#x27;</code> 覆盖</p>
+<p>所以，babel 是这样编译的：</p>
+<pre><code class="language-js">module.exports.default = &quot;foo&quot;;
+// 此时 CJS 导入 将带来新问题，因为 &#x27;foo&#x27; 变成了 {default:&#x27;foo&#x27;}
+const foo = require(&quot;bar&quot;);
+</code></pre>
+<p>为了解决这个问题，Babel 在转化过程中，通过将属性__esModule 设置为 true，标记这个模块是编译前是 ESM。</p>
+<pre><code class="language-js">// export
+&quot;use strict&quot;;
+Object.defineProperty(exports, &quot;__esModule&quot;, { value: true });
+exports.default = 0;
+
+// import
+(&quot;use strict&quot;);
+var __importDefault =
+  (this &amp;&amp; this.__importDefault) ||
+  function (mod) {
+    return mod &amp;&amp; mod.__esModule ? mod : { default: mod };
+  };
+Object.defineProperty(exports, &quot;__esModule&quot;, { value: true });
+var bar_1 = __importDefault(require(&quot;bar&quot;));
+consol.log(&quot;foo&quot;, bar_1.default); // 结果为0
+</code></pre>
+<blockquote>
+<p>这样通过 babel 的编译，ESM 的导入导出，会经过一层包装转化成 CJS 的导入导出，ESM 与 CJS 的交互性也趋于正常了。这个时候 Node 搞事情了，发布了 Node 的 ESM 模块实现方案，即<code>default</code> 总是等于<code>module.exports</code>，所以归根到底， default 默认导出问题 在 Node 平台与 Babel 之间出现了分歧。导致有些项目使用 Babel 编译，在 Node 环境运行就出现问题。</p>
+</blockquote>
+<p>举个例子，在 Node 环境中，<code>module.exports = 非对象</code>，会被认为是默认导出，此时<code>import foo</code> 得到 <code>foo</code></p>
+<pre><code class="language-js">// export
+module.exports = &quot;foo&quot;;
+// import 符合预期 &#x27;foo&#x27;
+import foo from &quot;./foo&quot;;
+</code></pre>
+<pre><code class="language-js">// 而在 Babel 编译 ESM 为 CJS 后，得到的 export 为
+module.exports.default = &quot;foo&quot;;
+// 如果此时引入Babel编译后的 CJS ，就出现问题了，此时foo为 {default:&#x27;foo&#x27;}
+import foo from &quot;./foo&quot;;
+</code></pre>
+<p>对于此，只能做一系列的兼容判断，以下是 esbuild 的解决方案。</p>
+<p>如果导入语句被用来加载一个 CommonJS 文件，并且</p>
+<ul>
+<li>module.exports 是一个对象</li>
+<li>module.exports.__esModule 是 truthy</li>
+<li>文件名不是以.mjs 或.mts 结尾，package.json 文件不包含 &quot;type&quot;: &quot;module&quot;</li>
+</ul>
+<p>那么 esbuild 将把默认导出设置为 module.exports.default（像 Babel 一样）。否则，默认出口将被设置为 module.exports（像 Node）。</p>
+<p>请注意，这意味着默认出口在以前没有被定义的情况下现在可能是未定义的。这与 Webpack 的行为相匹配，所以希望它能更加兼容。
+还要注意，这意味着导入行为现在取决于文件的扩展名和 package.json 的内容。这也符合 Webpack 的行为，希望能提高兼容性。</p>
+<p>如果一个 require 调用被用来加载一个 ES 模块文件，返回的模块命名空间对象的__esModule 属性被设置为 true。这就像 ES 模块已经通过 Babel 兼容的转换被转换为 CommonJS 一样。</p>
+<p>如果导入语句或 import() 表达式被用来加载一个 ES 模块，esModule 标记现在不应该出现在模块命名空间对象上。这释放了 esModule 的导出名称，使其可以用于 ES 模块。</p>
+<p>现在允许在 ES 模块中使用 __esModule 作为一个正常的导出名。这个属性可以被其他 ES 模块访问，但不能被使用 require 加载 ES 模块的代码访问，他们将会始终看到这个属性被设置为 true。</p></article></main><footer class="mt-10"><hr class="my-4"/><small class="flex justify-between">@ Hai<nav class="underline decoration-1"><a class="mr-3" href="https://github.com/haijie-x">github</a><a href="https://twitter.com/__haijie">twitter</a></nav></small></footer></div><script src="/_next/static/chunks/webpack-ba6ac5b5713db877.js" async=""></script><script src="/_next/static/chunks/44856608-9ee913c47fa02561.js" async=""></script><script src="/_next/static/chunks/920-b802bbbd4288d489.js" async=""></script><script src="/_next/static/chunks/main-app-656bc428d252f1b7.js" async=""></script><script>(self.__next_f=self.__next_f||[]).push([0])</script><script>self.__next_f.push([1,"1:HL[\"/_next/static/media/c9a5bc6a7c948fb0-s.p.woff2\",{\"as\":\"font\",\"type\":\"font/woff2\"}]\n2:HL[\"/_next/static/css/34c9aa3dac019c99.css\",{\"as\":\"style\"}]\n0:\"$L3\"\n"])</script><script>self.__next_f.push([1,"4:I{\"id\":\"8225\",\"chunks\":[\"272:static/chunks/webpack-ba6ac5b5713db877.js\",\"417:static/chunks/44856608-9ee913c47fa02561.js\",\"920:static/chunks/920-b802bbbd4288d489.js\"],\"name\":\"\",\"async\":false}\n6:I{\"id\":\"1659\",\"chunks\":[\"272:static/chunks/webpack-ba6ac5b5713db877.js\",\"417:static/chunks/44856608-9ee913c47fa02561.js\",\"920:static/chunks/920-b802bbbd4288d489.js\"],\"name\":\"\",\"async\":false}\n7:I{\"id\":\"8112\",\"chunks\":[\"553:static/chunks/553-b75a1ab1e88d23c9.js\",\"185:static/chunks/app/layout-ae43402e7109a0fc.js\"],\"nam"])</script><script>self.__next_f.push([1,"e\":\"\",\"async\":false}\n8:I{\"id\":\"9553\",\"chunks\":[\"553:static/chunks/553-b75a1ab1e88d23c9.js\",\"185:static/chunks/app/layout-ae43402e7109a0fc.js\"],\"name\":\"\",\"async\":false}\na:I{\"id\":\"1588\",\"chunks\":[\"272:static/chunks/webpack-ba6ac5b5713db877.js\",\"417:static/chunks/44856608-9ee913c47fa02561.js\",\"920:static/chunks/920-b802bbbd4288d489.js\"],\"name\":\"\",\"async\":false}\nb:I{\"id\":\"4737\",\"chunks\":[\"272:static/chunks/webpack-ba6ac5b5713db877.js\",\"417:static/chunks/44856608-9ee913c47fa02561.js\",\"920:static/chunks/920-b802b"])</script><script>self.__next_f.push([1,"bbd4288d489.js\"],\"name\":\"\",\"async\":false}\n"])</script><script>self.__next_f.push([1,"3:[[[\"$\",\"link\",\"0\",{\"rel\":\"stylesheet\",\"href\":\"/_next/static/css/34c9aa3dac019c99.css\",\"precedence\":\"next\"}]],[\"$\",\"$L4\",null,{\"buildId\":\"JXPeZoXc9Nz75w5nwf-9S\",\"assetPrefix\":\"\",\"initialCanonicalUrl\":\"/posts/surviving-esm-and-cjs-interop\",\"initialTree\":[\"\",{\"children\":[\"posts\",{\"children\":[[\"slug\",\"surviving-esm-and-cjs-interop\",\"c\"],{\"children\":[\"__PAGE__?{\\\"slug\\\":[\\\"surviving-esm-and-cjs-interop\\\"]}\",{}]}]}]},\"$undefined\",\"$undefined\",true],\"initialHead\":[\"$L5\",[\"$\",\"meta\",null,{\"name\":\"next-size-adjust\"}]],\"globalErrorComponent\":\"$6\",\"notFound\":[\"$\",\"html\",null,{\"lang\":\"en\",\"children\":[[\"$\",\"link\",null,{\"rel\":\"icon\",\"href\":\"/logo.svg\",\"type\":\"image/x-icon\"}],[\"$\",\"title\",null,{\"children\":\"Hai\"}],[\"$\",\"body\",null,{\"className\":\"antialiased min-h-screen bg-white text-slate-900 __className_a64ecd\",\"children\":[\"$\",\"div\",null,{\"className\":\"max-w-2xl mx-auto py-10 px-4\",\"children\":[[\"$\",\"header\",null,{\"children\":[\"$\",\"div\",null,{\"className\":\"flex items-center justify-between\",\"children\":[[\"$\",\"$L7\",null,{}],[\"$\",\"nav\",null,{\"className\":\"ml-auto text-sm font-medium space-x-6\",\"children\":[[\"$\",\"$L8\",null,{\"href\":\"/\",\"children\":\"Home\"}],[\"$\",\"$L8\",null,{\"href\":\"/about\",\"children\":\"About\"}]]}]]}]}],[\"$\",\"main\",null,{\"children\":[\"$L9\",\"$undefined\",[[\"$\",\"title\",null,{\"children\":\"404: This page could not be found.\"}],[\"$\",\"div\",null,{\"style\":{\"fontFamily\":\"system-ui,\\\"Segoe UI\\\",Roboto,Helvetica,Arial,sans-serif,\\\"Apple Color Emoji\\\",\\\"Segoe UI Emoji\\\"\",\"height\":\"100vh\",\"textAlign\":\"center\",\"display\":\"flex\",\"flexDirection\":\"column\",\"alignItems\":\"center\",\"justifyContent\":\"center\"},\"children\":[\"$\",\"div\",null,{\"children\":[[\"$\",\"style\",null,{\"dangerouslySetInnerHTML\":{\"__html\":\"body{color:#000;background:#fff;margin:0}.next-error-h1{border-right:1px solid rgba(0,0,0,.3)}@media (prefers-color-scheme:dark){body{color:#fff;background:#000}.next-error-h1{border-right:1px solid rgba(255,255,255,.3)}}\"}}],[\"$\",\"h1\",null,{\"className\":\"next-error-h1\",\"style\":{\"display\":\"inline-block\",\"margin\":\"0 20px 0 0\",\"padding\":\"0 23px 0 0\",\"fontSize\":24,\"fontWeight\":500,\"verticalAlign\":\"top\",\"lineHeight\":\"49px\"},\"children\":\"404\"}],[\"$\",\"div\",null,{\"style\":{\"display\":\"inline-block\"},\"children\":[\"$\",\"h2\",null,{\"style\":{\"fontSize\":14,\"fontWeight\":400,\"lineHeight\":\"49px\",\"margin\":0},\"children\":\"This page could not be found.\"}]}]]}]}]]]}],[\"$\",\"footer\",null,{\"className\":\"mt-10\",\"children\":[[\"$\",\"hr\",null,{\"className\":\"my-4\"}],[\"$\",\"small\",null,{\"className\":\"flex justify-between\",\"children\":[\"@ Hai\",[\"$\",\"nav\",null,{\"className\":\"underline decoration-1\",\"children\":[[\"$\",\"$L8\",null,{\"href\":\"https://github.com/haijie-x\",\"className\":\"mr-3\",\"children\":\"github\"}],[\"$\",\"$L8\",null,{\"href\":\"https://twitter.com/__haijie\",\"children\":\"twitter\"}]]}]]}]]}]]}]}]]}],\"asNotFound\":false,\"children\":[[\"$\",\"html\",null,{\"lang\":\"en\",\"children\":[[\"$\",\"link\",null,{\"rel\":\"icon\",\"href\":\"/logo.svg\",\"type\":\"image/x-icon\"}],[\"$\",\"title\",null,{\"children\":\"Hai\"}],[\"$\",\"body\",null,{\"className\":\"antialiased min-h-screen bg-white text-slate-900 __className_a64ecd\",\"children\":[\"$\",\"div\",null,{\"className\":\"max-w-2xl mx-auto py-10 px-4\",\"children\":[[\"$\",\"header\",null,{\"children\":[\"$\",\"div\",null,{\"className\":\"flex items-center justify-between\",\"children\":[[\"$\",\"$L7\",null,{}],[\"$\",\"nav\",null,{\"className\":\"ml-auto text-sm font-medium space-x-6\",\"children\":[[\"$\",\"$L8\",null,{\"href\":\"/\",\"children\":\"Home\"}],[\"$\",\"$L8\",null,{\"href\":\"/about\",\"children\":\"About\"}]]}]]}]}],[\"$\",\"main\",null,{\"children\":[\"$\",\"$La\",null,{\"parallelRouterKey\":\"children\",\"segmentPath\":[\"children\"],\"error\":\"$undefined\",\"errorStyles\":\"$undefined\",\"loading\":\"$undefined\",\"loadingStyles\":\"$undefined\",\"hasLoading\":false,\"template\":[\"$\",\"$Lb\",null,{}],\"templateStyles\":\"$undefined\",\"notFound\":\"$undefined\",\"notFoundStyles\":\"$undefined\",\"childProp\":{\"current\":[\"$\",\"$La\",null,{\"parallelRouterKey\":\"children\",\"segmentPath\":[\"children\",\"posts\",\"children\"],\"error\":\"$undefined\",\"errorStyles\":\"$undefined\",\"loading\":\"$undefined\",\"loadingStyles\":\"$undefined\",\"hasLoading\":false,\"template\":[\"$\",\"$Lb\",null,{}],\"templateStyles\":\"$undefined\",\"notFound\":\"$undefined\",\"notFoundStyles\":\"$undefined\",\"childProp\":{\"current\":[\"$\",\"$La\",null,{\"parallelRouterKey\":\"children\",\"segmentPath\":[\"children\",\"posts\",\"children\",[\"slug\",\"surviving-esm-and-cjs-interop\",\"c\"],\"children\"],\"error\":\"$undefined\",\"errorStyles\":\"$undefined\",\"loading\":\"$undefined\",\"loadingStyles\":\"$undefined\",\"hasLoading\":false,\"template\":[\"$\",\"$Lb\",null,{}],\"templateStyles\":\"$undefined\",\"notFound\":\"$undefined\",\"notFoundStyles\":\"$undefined\",\"childProp\":{\"current\":[\"$Lc\",null],\"segment\":\"__PAGE__?{\\\"slug\\\":[\\\"surviving-esm-and-cjs-interop\\\"]}\"},\"styles\":[]}],\"segment\":[\"slug\",\"surviving-esm-and-cjs-interop\",\"c\"]},\"styles\":[]}],\"segment\":\"posts\"},\"styles\":[]}]}],[\"$\",\"footer\",null,{\"className\":\"mt-10\",\"children\":[[\"$\",\"hr\",null,{\"className\":\"my-4\"}],[\"$\",\"small\",null,{\"className\":\"flex justify-between\",\"children\":[\"@ Hai\",[\"$\",\"nav\",null,{\"className\":\"underline decoration-1\",\"children\":[[\"$\",\"$L8\",null,{\"href\":\"https://github.com/haijie-x\",\"className\":\"mr-3\",\"children\":\"github\"}],[\"$\",\"$L8\",null,{\"href\":\"https://twitter.com/__haijie\",\"children\":\"twitter\"}]]}]]}]]}]]}]}]]}],null]}]]\n"])</script><script>self.__next_f.push([1,"c:[\"$\",\"article\",null,{\"className\":\"py-6 prose dark:prose-invert\",\"children\":[[\"$\",\"h1\",null,{\"className\":\"mb-4 break-all\",\"children\":\"Surviving ESM and CJS module Interop\"}],[\"$\",\"p\",null,{\"className\":\"text-slate-700\",\"children\":\"深入研究 ESM 和 CJS 模块方案\"}],[\"$\",\"hr\",null,{\"className\":\"my-4\"}],[[\"$\",\"p\",null,{\"children\":[\"ESM 与 CJS 作为两种如今流行的模块解决方案，如何进行互操作\",[\"$\",\"code\",null,{\"children\":\"interop\"}],\"确实一大难题。本篇文章会先着手 package.json 简单介绍 CJS / ESM 模块方案。\"]}],\"\\n\",[\"$\",\"h3\",null,{\"children\":\"package.json\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":[[\"$\",\"strong\",null,{\"children\":\"type\"}],\": 定义该模块会被 Node 如何解析，若无该字段，会被认为是 CJS。\"]}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"// my-app.js, treated as an ES module because there is a package.json\\n// file in the same folder with \\\"type\\\": \\\"module\\\".\\n\\nimport \\\"./startup/init.js\\\";\\n// Loaded as ES module since ./startup contains no package.json file,\\n// and therefore inherits the \\\"type\\\" value from one level up.\\n\\nimport \\\"commonjs-package\\\";\\n// Loaded as CommonJS since ./node_modules/commonjs-package/package.json\\n// lacks a \\\"type\\\" field or contains \\\"type\\\": \\\"commonjs\\\".\\n\\nimport \\\"./node_modules/commonjs-package/index.js\\\";\\n// Loaded as CommonJS since ./node_modules/commonjs-package/package.json\\n// lacks a \\\"type\\\" field or contains \\\"type\\\": \\\"commonjs\\\".\\n\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":\".mjs/.cjs 总是作为 ESM/CJS 模块化进行加载，而不管最近的 package.json 的设置。\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":[[\"$\",\"strong\",null,{\"children\":\"main\"}],\": 定义包的主要入口点。所有版本的 Node 皆支持。\"]}],\"\\n\",[\"$\",\"p\",null,{\"children\":[[\"$\",\"strong\",null,{\"children\":\"exports\"}],\": 定义包多个入口点，只有 12+ 版本的 Node 才支持。它可以支持定义子路径导出和条件导出，同时封装内部未导出的模块。所有的路径定义都得是以'./'开头的相对路径。\"]}],\"\\n\",[\"$\",\"p\",null,{\"children\":[[\"$\",\"strong\",null,{\"children\":\"imports\"}],\": 创建仅适用于包本身内的导入说明符的私有映射。字段中的条目必须始终以 # 开头，以确保它们与外部包说明符没有歧义。\"]}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-json\",\"children\":\"// package.json\\n{\\n  \\\"imports\\\": {\\n    \\\"#dep\\\": {\\n      // 有先后执行顺序 先加载node 再加载default 相关文件不存在会报错\\n      \\\"node\\\": \\\"dep-node-native\\\",\\n      \\\"default\\\": \\\"./dep-polyfill.js\\\"\\n    }\\n  },\\n  \\\"dependencies\\\": {\\n    \\\"dep-node-native\\\": \\\"^1.0.0\\\"\\n  }\\n}\\n\"}]}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"// node_modules/dep-node-native/index.js\\nexports.name = \\\"native\\\";\\n// dep-polyfill.js\\nexports.name = \\\"polyfill\\\";\\n\\n// foo.mjs\\nimport a from \\\"#dep\\\";\\n\"}]}],\"\\n\",[\"$\",\"h3\",null,{\"children\":\"ESM import CJS\"}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"// node_modules/colors/index.cjs\\nmodule.exports = {\\n  red: \\\"red\\\",\\n  blue: \\\"blue\\\",\\n};\\n// my-app.mjs\\nimport colors from \\\"colors\\\";\\n// WON'T WORK: `import { red, blue } from \\\"colors\\\";`\\n\\n// CAVEAT: We can't do named import, but can expand later.\\nconst { red, blue } = colors;\\n\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":[\"由于这种简单性，库作者为了兼容库的 CJS 和 ESM 两种模式，他可能需要考虑 ESM 包装器模式（\",[\"$\",\"a\",null,{\"href\":\"https://nodejs.org/api/packages.html#approach-1-use-an-es-module-wrapper\",\"children\":\"在 Node.js 文档中建议\"}],\"），该模式是以 CJS 模块规范编写代码，然后在 ESM 模块的出口文件中导入 CJS 模块，并包装成 ESM 模块导出给用户使用。\"]}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"// package.json\\n{\\n    \\\"name\\\": \\\"my-pkg\\\",\\n    \\\"main\\\": \\\"./index.js\\\",\\n    \\\"exports\\\": {\\n      \\\".\\\": {\\n        \\\"import\\\": \\\"./wrapper.mjs\\\",\\n        \\\"require\\\": \\\"./index.js\\\"\\n      }\\n    }\\n  }\\n\\n// node_modules/my-pkg/a.js\\nexports.module_name = 'a'\\n\\n// node_modules/my-pkg/index.js\\nconst { module_name } = require('./a')\\nexports.a_module_name = module_name\\n\\n// node_modules/my-pkg/wrapper.mjs\\nimport cjs_module from './index.js'\\nexport const a_module_name = cjs_module.a_module_name\\n\\n// use my-pkg\\nimport { a_module_name } from \\\"my-pkg\\\";\\nconsole.log(a_module_name); // 'a'\\n\\nconst { a_module_name } = require(\\\"my-pkg\\\");\\nconsole.log(a_module_name); // 'a'\\n\"}]}],\"\\n\",[\"$\",\"h3\",null,{\"children\":\"CJS import ESM\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":[\"先说个坏消息，在 CJS 中导入 ESM 是痛苦的。要将 ESM 文件导入 CJS，必须遵守以下所有条件：\",[\"$\",\"br\",null,{}],\"\\n\",\"1.你必须在 Node.js 上 v12.17.0+（这适用于任何与 ESM 相关的）。\",[\"$\",\"br\",null,{}],\"\\n\",\"2.\",[\"$\",\"a\",null,{\"href\":\"https://nodejs.org/api/esm.html#import-expressions\",\"children\":\"使用动态 import() 调用\"}],\"，这会导致后续逻辑代码都为异步的。\"]}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"// esm.mjs\\nexport const name = \\\"polyfill\\\";\\n// cjs.js\\nconsole.log(require(\\\"./esm.mjs\\\")); // Error [ERR_REQUIRE_ESM]: require() of ES Module\\nimport(\\\"./esm.mjs\\\").then((r) =\u003e console.log(r)); // [Module: null prototype] { name: 'polyfill' }\\n\"}]}],\"\\n\",[\"$\",\"h3\",null,{\"children\":\"ESM \u0026 CJS 互操作\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":[\"对于 ESM 而言，import xxx 中的 xxx 指该模块的默认导出，这是一种语法糖，实际应该是 \",[\"$\",\"code\",null,{\"children\":\"import { default as xxx }\"}]]}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"import esm_module from \\\"./esm_module.mjs\\\";\\n\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"对于 CJS 而言，import xxx 的 xxx 指该模块的所有导出 即 module.exports 或 exports 对象\\n这么设计的原因是 CJS 的动态的，而 ESM 的导入是静态的。\\n也就是说 ESM 通过对源码的编译即可确定依赖关系，而 CJS 需运行时才可确定依赖关系。\\n所以 ESM 导入现有的 CJS 需取整个对象，即 module.exports 或 exports 对象。\"}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"import cjs_module from \\\"./cjs_module.js\\\";\\n\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"到这里，ESM 对于 CJS 的兼容设计似乎一点问题没有，但其实 export default xxx 为后续的 ESM 与 CJS 的 interop 问题埋下了祸根。\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"在 ESM 被 javascript 的所有运行环境全量支持前，人们希望在此期间使用 ESM，此时就需要使用 Babel 进行 ESM 到 CJS 的编译。\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"然而这样转换带来了一个问题：如何准确地将 ESM 编译为 CJS 呢？举个例子。\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":[\"一个标准的 ESM 导入导出如：\",[\"$\",\"code\",null,{\"children\":\"export default 'foo'\"}],\" 与 \",[\"$\",\"code\",null,{\"children\":\"import foo from 'bar'\"}],\"，直观上看，转换为 CJS 应该如此：\",[\"$\",\"code\",null,{\"children\":\"module.exports = 'foo'\"}],\" 与 \",[\"$\",\"code\",null,{\"children\":\"const foo = require('bar')\"}],\"。\"]}],\"\\n\",[\"$\",\"p\",null,{\"children\":[\"这里暴露了一个问题，该模块的导出只能固定是\",[\"$\",\"code\",null,{\"children\":\"foo\"}],\"，如果该模块还有 \",[\"$\",\"code\",null,{\"children\":\"export a\"}],\"、\",[\"$\",\"code\",null,{\"children\":\"export b\"}],\",\",[\"$\",\"code\",null,{\"children\":\"export c\"}],\"呢，编译后的 CJS 导出 \",[\"$\",\"code\",null,{\"children\":\"exports.a = 'a';exports.b = 'b'; // ...\"}],\"\\n将被 \",[\"$\",\"code\",null,{\"children\":\"module.exports = 'foo'\"}],\" 覆盖\"]}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"所以，babel 是这样编译的：\"}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"module.exports.default = \\\"foo\\\";\\n// 此时 CJS 导入 将带来新问题，因为 'foo' 变成了 {default:'foo'}\\nconst foo = require(\\\"bar\\\");\\n\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"为了解决这个问题，Babel 在转化过程中，通过将属性__esModule 设置为 true，标记这个模块是编译前是 ESM。\"}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"// export\\n\\\"use strict\\\";\\nObject.defineProperty(exports, \\\"__esModule\\\", { value: true });\\nexports.default = 0;\\n\\n// import\\n(\\\"use strict\\\");\\nvar __importDefault =\\n  (this \u0026\u0026 this.__importDefault) ||\\n  function (mod) {\\n    return mod \u0026\u0026 mod.__esModule ? mod : { default: mod };\\n  };\\nObject.defineProperty(exports, \\\"__esModule\\\", { value: true });\\nvar bar_1 = __importDefault(require(\\\"bar\\\"));\\nconsol.log(\\\"foo\\\", bar_1.default); // 结果为0\\n\"}]}],\"\\n\",[\"$\",\"blockquote\",null,{\"children\":[\"\\n\",[\"$\",\"p\",null,{\"children\":[\"这样通过 babel 的编译，ESM 的导入导出，会经过一层包装转化成 CJS 的导入导出，ESM 与 CJS 的交互性也趋于正常了。这个时候 Node 搞事情了，发布了 Node 的 ESM 模块实现方案，即\",[\"$\",\"code\",null,{\"children\":\"default\"}],\" 总是等于\",[\"$\",\"code\",null,{\"children\":\"module.exports\"}],\"，所以归根到底， default 默认导出问题 在 Node 平台与 Babel 之间出现了分歧。导致有些项目使用 Babel 编译，在 Node 环境运行就出现问题。\"]}],\"\\n\"]}],\"\\n\",[\"$\",\"p\",null,{\"children\":[\"举个例子，在 Node 环境中，\",[\"$\",\"code\",null,{\"children\":\"module.exports = 非对象\"}],\"，会被认为是默认导出，此时\",[\"$\",\"code\",null,{\"children\":\"import foo\"}],\" 得到 \",[\"$\",\"code\",null,{\"children\":\"foo\"}]]}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"// export\\nmodule.exports = \\\"foo\\\";\\n// import 符合预期 'foo'\\nimport foo from \\\"./foo\\\";\\n\"}]}],\"\\n\",[\"$\",\"pre\",null,{\"children\":[\"$\",\"code\",null,{\"className\":\"language-js\",\"children\":\"// 而在 Babel 编译 ESM 为 CJS 后，得到的 export 为\\nmodule.exports.default = \\\"foo\\\";\\n// 如果此时引入Babel编译后的 CJS ，就出现问题了，此时foo为 {default:'foo'}\\nimport foo from \\\"./foo\\\";\\n\"}]}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"对于此，只能做一系列的兼容判断，以下是 esbuild 的解决方案。\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"如果导入语句被用来加载一个 CommonJS 文件，并且\"}],\"\\n\",[\"$\",\"ul\",null,{\"children\":[\"\\n\",[\"$\",\"li\",null,{\"children\":\"module.exports 是一个对象\"}],\"\\n\",[\"$\",\"li\",null,{\"children\":\"module.exports.__esModule 是 truthy\"}],\"\\n\",[\"$\",\"li\",null,{\"children\":\"文件名不是以.mjs 或.mts 结尾，package.json 文件不包含 \\\"type\\\": \\\"module\\\"\"}],\"\\n\"]}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"那么 esbuild 将把默认导出设置为 module.exports.default（像 Babel 一样）。否则，默认出口将被设置为 module.exports（像 Node）。\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"请注意，这意味着默认出口在以前没有被定义的情况下现在可能是未定义的。这与 Webpack 的行为相匹配，所以希望它能更加兼容。\\n还要注意，这意味着导入行为现在取决于文件的扩展名和 package.json 的内容。这也符合 Webpack 的行为，希望能提高兼容性。\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"如果一个 require 调用被用来加载一个 ES 模块文件，返回的模块命名空间对象的__esModule 属性被设置为 true。这就像 ES 模块已经通过 Babel 兼容的转换被转换为 CommonJS 一样。\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"如果导入语句或 import() 表达式被用来加载一个 ES 模块，esModule 标记现在不应该出现在模块命名空间对象上。这释放了 esModule 的导出名称，使其可以用于 ES 模块。\"}],\"\\n\",[\"$\",\"p\",null,{\"children\":\"现在允许在 ES 模块中使用 __esModule 作为一个正常的导出名。这个属性可以被其他 ES 模块访问，但不能被使用 require 加载 ES 模块的代码访问，他们将会始终看到这个属性被设置为 true。\"}]]]}]\n"])</script><script>self.__next_f.push([1,"9:[[\"$\",\"meta\",\"0\",{\"charSet\":\"utf-8\"}],[\"$\",\"meta\",\"1\",{\"name\":\"viewport\",\"content\":\"width=device-width, initial-scale=1\"}]]\n5:[[\"$\",\"meta\",\"0\",{\"charSet\":\"utf-8\"}],[\"$\",\"title\",\"1\",{\"children\":\"Surviving ESM and CJS module Interop\"}],[\"$\",\"meta\",\"2\",{\"name\":\"description\",\"content\":\"深入研究 ESM 和 CJS 模块方案\"}],[\"$\",\"meta\",\"3\",{\"name\":\"viewport\",\"content\":\"width=device-width, initial-scale=1\"}]]\n"])</script></body></html>
